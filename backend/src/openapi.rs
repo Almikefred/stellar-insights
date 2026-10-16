@@ -249,7 +249,6 @@ impl Modify for SecurityAddon {
             crate::api::cost_calculator::RouteCostBreakdown,
             crate::api::cost_calculator::RouteEstimate,
             crate::api::cost_calculator::CostCalculationResponse,
-            crate::api::cost_calculator::ErrorResponse,
             crate::api::snapshots::SnapshotResponse,
             crate::api::snapshots::SubmissionInfo,
             crate::api::snapshots::GenerateSnapshotRequest,

@@ -1,13 +1,42 @@
 # PayRaider
 
-> **PayRaider has moved to the [Pay-Raider organisation](https://github.com/Pay-Raider).**
-> Development continues in separate repositories:
-> [backend](https://github.com/Pay-Raider/payraider-backend) ·
-> [web app](https://github.com/Pay-Raider/payraider-app) ·
-> [plugin & SDKs](https://github.com/Pay-Raider/payraider-plugin) ·
-> [contracts](https://github.com/Pay-Raider/payraider-contracts) ·
-> [mobile](https://github.com/Pay-Raider/payraider-mobile).
-> This repository is kept for its history and is no longer updated.
+> ⚠️ **DEPRECATED — Development has moved to the [Pay-Raider organisation](https://github.com/Pay-Raider).**
+>
+> This repository is **archived and no longer maintained**. No new features, bug fixes, or security patches will be merged here. All active development continues in the Pay-Raider org:
+>
+> | Component | New home |
+> | --- | --- |
+> | Backend API (Rust) | [Pay-Raider/payraider-backend](https://github.com/Pay-Raider/payraider-backend) |
+> | Web app (Next.js) | [Pay-Raider/payraider-app](https://github.com/Pay-Raider/payraider-app) |
+> | Plugin & SDKs | [Pay-Raider/payraider-plugin](https://github.com/Pay-Raider/payraider-plugin) |
+> | Soroban contracts | [Pay-Raider/payraider-contracts](https://github.com/Pay-Raider/payraider-contracts) |
+> | Mobile app | [Pay-Raider/payraider-mobile](https://github.com/Pay-Raider/payraider-mobile) |
+>
+> **If you have open issues or PRs here**, please re-open them in the relevant Pay-Raider repository. See the [migration checklist](#migration-checklist--archive-plan) below.
+
+## Migration Checklist & Archive Plan
+
+### What has migrated
+
+- [x] Core preflight API (`/api/v1/preflight`) → `payraider-backend`
+- [x] TypeScript and Python SDKs → `payraider-plugin`
+- [x] MCP server → `payraider-plugin`
+- [x] Claude plugin → `payraider-plugin`
+- [x] Soroban snapshot contract → `payraider-contracts`
+- [x] Next.js dashboard and corridor explorer → `payraider-app`
+- [x] React Native mobile app → `payraider-mobile`
+
+### What stays here (history only)
+
+- Earlier-scope features: governance tooling, quest system, GDPR tooling — not carried forward.
+- All git history, tags, and releases are preserved in this repo for reference.
+
+### Archive plan
+
+1. All open issues labelled `migrate` will be recreated in the appropriate Pay-Raider repo.
+2. This repo will be set to **read-only / archived** on GitHub once the issue backlog is triaged (target: next sprint after this PR merges).
+3. A redirect banner (this notice) will remain in the README permanently.
+4. The `main` branch will receive no further commits after archiving.
 
 [![Coverage](https://codecov.io/gh/Ndifreke000/stellar-insights/branch/main/graph/badge.svg)](https://codecov.io/gh/Ndifreke000/stellar-insights)
 [![Coverage CI](https://github.com/Ndifreke000/stellar-insights/actions/workflows/coverage.yml/badge.svg)](https://github.com/Ndifreke000/stellar-insights/actions/workflows/coverage.yml)
