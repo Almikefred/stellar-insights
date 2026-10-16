@@ -24,9 +24,12 @@ use crate::request_id::RequestId;
 use crate::rpc::{
     circuit_breaker::rpc_circuit_breaker,
     error::{with_retry, RetryConfig, RpcError},
-    StellarRpcClient,
+    Asset as RpcAsset, HorizonLiquidityPool, StellarRpcClient,
 };
-use crate::services::analytics::{compute_corridor_metrics, CorridorPayment};
+use crate::services::analytics::{
+    compute_combined_liquidity_depth, compute_corridor_metrics, AmmPoolReserves, CorridorPayment,
+    OrderBookEntry as AnalyticsOrderBookEntry, OrderBookSnapshot,
+};
 use crate::services::price_feed::PriceFeedClient;
 use crate::state::AppState;
 use crate::validation;
@@ -436,6 +439,131 @@ pub async fn list_corridors(
 ///
 /// Shared by the corridor list endpoint and the pre-payment check so both
 /// score corridors from the same data.
+/// Build the Horizon `Asset` Stellar's order book/trade endpoints expect
+/// from a corridor's parsed `(code, issuer)` pair, where `issuer == "native"`
+/// means XLM (see `extract_asset_pair_from_payment` above).
+fn to_rpc_asset(code: &str, issuer: &str) -> RpcAsset {
+    if code == "XLM" && issuer == "native" {
+        RpcAsset {
+            asset_type: "native".to_string(),
+            asset_code: None,
+            asset_issuer: None,
+        }
+    } else {
+        RpcAsset {
+            asset_type: if code.len() <= 4 {
+                "credit_alphanum4".to_string()
+            } else {
+                "credit_alphanum12".to_string()
+            },
+            asset_code: Some(code.to_string()),
+            asset_issuer: Some(issuer.to_string()),
+        }
+    }
+}
+
+/// Does this liquidity pool's two reserves match the corridor's asset pair
+/// (in either order)?
+fn pool_matches_pair(
+    pool: &HorizonLiquidityPool,
+    source_code: &str,
+    source_issuer: &str,
+    dest_code: &str,
+    dest_issuer: &str,
+) -> bool {
+    if pool.reserves.len() != 2 {
+        return false;
+    }
+
+    let matches_side = |reserve_asset: &str, code: &str, issuer: &str| {
+        if code == "XLM" && issuer == "native" {
+            reserve_asset == "native"
+        } else {
+            reserve_asset == format!("{code}:{issuer}")
+        }
+    };
+
+    let r0 = pool.reserves[0].asset.as_str();
+    let r1 = pool.reserves[1].asset.as_str();
+
+    (matches_side(r0, source_code, source_issuer) && matches_side(r1, dest_code, dest_issuer))
+        || (matches_side(r0, dest_code, dest_issuer) && matches_side(r1, source_code, source_issuer))
+}
+
+/// Convert a pool's raw reserve amounts into the USD-ish units
+/// `compute_amm_pool_depth` expects, using the one price we reliably have
+/// (the corridor's source asset price) for both sides — the same
+/// simplification `LiquidityPoolAnalyzer::sync_pools` already documents and
+/// uses ("assume both sides equivalent for AMM").
+fn pool_reserves_usd(pool: &HorizonLiquidityPool, source_price_usd: f64) -> Option<AmmPoolReserves> {
+    if pool.reserves.len() != 2 {
+        return None;
+    }
+    let a: f64 = pool.reserves[0].amount.parse().unwrap_or(0.0);
+    let b: f64 = pool.reserves[1].amount.parse().unwrap_or(0.0);
+    Some(AmmPoolReserves {
+        reserve_a_usd: a * source_price_usd,
+        reserve_b_usd: b * source_price_usd,
+    })
+}
+
+/// Fetch the Horizon order book for a corridor's asset pair and combine it
+/// with any liquidity pool matching that pair (#2667). Returns `0.0` if
+/// neither source has usable data — the caller decides how to treat that
+/// (see `compute_live_corridors`, which falls back to the payment-volume
+/// proxy rather than reporting zero liquidity on a transient RPC error).
+async fn fetch_combined_liquidity_depth(
+    rpc_client: &StellarRpcClient,
+    source_code: &str,
+    source_issuer: &str,
+    dest_code: &str,
+    dest_issuer: &str,
+    source_price_usd: f64,
+    amm_pools: &[HorizonLiquidityPool],
+) -> f64 {
+    let selling = to_rpc_asset(source_code, source_issuer);
+    let buying = to_rpc_asset(dest_code, dest_issuer);
+
+    let order_book_snapshot = match rpc_client.fetch_order_book(&selling, &buying, 20).await {
+        Ok(ob) => {
+            let to_entries = |levels: &[crate::rpc::OrderBookEntry]| -> Vec<AnalyticsOrderBookEntry> {
+                levels
+                    .iter()
+                    .filter_map(|e| {
+                        let price: f64 = e.price.parse().ok()?;
+                        let amount: f64 = e.amount.parse().ok()?;
+                        Some(AnalyticsOrderBookEntry {
+                            price,
+                            amount_usd: amount * source_price_usd,
+                        })
+                    })
+                    .collect()
+            };
+            Some(OrderBookSnapshot {
+                bids: to_entries(&ob.bids),
+                asks: to_entries(&ob.asks),
+            })
+        }
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                source_code,
+                dest_code,
+                "order book unavailable for corridor liquidity check"
+            );
+            None
+        }
+    };
+
+    let relevant_pools: Vec<AmmPoolReserves> = amm_pools
+        .iter()
+        .filter(|p| pool_matches_pair(p, source_code, source_issuer, dest_code, dest_issuer))
+        .filter_map(|p| pool_reserves_usd(p, source_price_usd))
+        .collect();
+
+    compute_combined_liquidity_depth(order_book_snapshot.as_ref(), &relevant_pools, 1.0)
+}
+
 pub(crate) async fn compute_live_corridors(
     rpc_client: &StellarRpcClient,
     price_feed: &PriceFeedClient,
@@ -469,6 +597,15 @@ pub(crate) async fn compute_live_corridors(
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to fetch trades from RPC: {e}"))?;
+
+    // **RPC DATA**: Fetch liquidity pools once (not per corridor below) so
+    // each corridor's liquidity check can combine order book depth with
+    // real AMM reserves (#2667). A failed fetch degrades to "no AMM
+    // liquidity" rather than failing the whole corridor computation.
+    let amm_pools = rpc_client
+        .fetch_liquidity_pools(200, None)
+        .await
+        .unwrap_or_default();
 
     // Group payments by asset pairs to identify corridors
     use std::collections::HashMap;
@@ -556,6 +693,30 @@ pub(crate) async fn compute_live_corridors(
         let liquidity_trend = get_liquidity_trend(volume_usd);
         let avg_latency = 400.0 + (success_rate * 2.0);
 
+        // #2667 — combine order book depth and AMM pool depth for this
+        // corridor's asset pair instead of using payment volume as a
+        // liquidity proxy (volume measures how much *did* move through the
+        // corridor, not how much *could*). Falls back to `volume_usd` when
+        // neither source has data (e.g. a brand-new asset pair, or RPC
+        // trouble) so a corridor the preceding behaviour could price isn't
+        // suddenly reported as having zero liquidity.
+        let liquidity_depth_usd = match prices.get(source_asset_key) {
+            Some(&price) => {
+                let depth = fetch_combined_liquidity_depth(
+                    rpc_client,
+                    source_parts[0],
+                    source_parts[1],
+                    dest_parts[0],
+                    dest_parts[1],
+                    price,
+                    &amm_pools,
+                )
+                .await;
+                if depth > 0.0 { depth } else { volume_usd }
+            }
+            None => volume_usd,
+        };
+
         let corridor_response = CorridorResponse {
             id: corridor_key.clone(),
             source_asset: source_parts[0].to_string(),
@@ -568,7 +729,7 @@ pub(crate) async fn compute_live_corridors(
             median_latency_ms: avg_latency * 0.75,
             p95_latency_ms: avg_latency * 2.5,
             p99_latency_ms: avg_latency * 4.0,
-            liquidity_depth_usd: volume_usd,
+            liquidity_depth_usd,
             liquidity_volume_24h_usd: volume_usd * 0.1,
             liquidity_trend,
             health_score,

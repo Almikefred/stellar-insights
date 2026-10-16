@@ -57,6 +57,62 @@ pub fn compute_liquidity_depth(order_book: &OrderBookSnapshot, max_slippage_perc
     buy_liquidity + sell_liquidity
 }
 
+/// USD-denominated reserves of one side of a liquidity pool, used to
+/// estimate how much of a payment an AMM pool can absorb before price
+/// impact exceeds a given slippage bound (#2667).
+///
+/// Reserves are expected in the same "simplified: assume both sides
+/// equivalent" USD-ish units `LiquidityPoolAnalyzer::sync_pools` already
+/// stores them in — this mirrors that existing approximation rather than
+/// introducing a new one.
+#[derive(Debug, Clone, Copy)]
+pub struct AmmPoolReserves {
+    pub reserve_a_usd: f64,
+    pub reserve_b_usd: f64,
+}
+
+/// Estimate the USD liquidity a constant-product AMM pool (x*y=k) can
+/// absorb on each side while keeping price impact within
+/// `max_slippage_percent`.
+///
+/// For a constant-product pool, trading `dx` into reserve `x` moves the
+/// price by approximately `dx / (x + dx)` (the standard Uniswap-v2-style
+/// slippage approximation). Solving for `dx` at a target slippage `s`
+/// (fractional) gives `dx = s * x / (1 - s)`. The same is computed for the
+/// other side and summed, mirroring how `compute_liquidity_depth` combines
+/// buy-side and sell-side order book depth.
+#[must_use]
+pub fn compute_amm_pool_depth(pool: &AmmPoolReserves, max_slippage_percent: f64) -> f64 {
+    let s = (max_slippage_percent / 100.0).clamp(0.0, 0.99);
+    if s <= 0.0 || pool.reserve_a_usd <= 0.0 || pool.reserve_b_usd <= 0.0 {
+        return 0.0;
+    }
+
+    let side_a = s * pool.reserve_a_usd / (1.0 - s);
+    let side_b = s * pool.reserve_b_usd / (1.0 - s);
+    side_a + side_b
+}
+
+/// Combine order book depth and AMM pool depth into one liquidity-depth
+/// figure for a corridor (#2667 — AMM pools provide real, on-chain
+/// liquidity that was previously ignored entirely by the preflight
+/// liquidity check; see `compute_live_corridors` in `api/corridors.rs`,
+/// which is where this is actually used for the live preflight path).
+#[must_use]
+pub fn compute_combined_liquidity_depth(
+    order_book: Option<&OrderBookSnapshot>,
+    amm_pools: &[AmmPoolReserves],
+    max_slippage_percent: f64,
+) -> f64 {
+    let order_book_depth =
+        order_book.map_or(0.0, |ob| compute_liquidity_depth(ob, max_slippage_percent));
+    let amm_depth: f64 = amm_pools
+        .iter()
+        .map(|p| compute_amm_pool_depth(p, max_slippage_percent))
+        .sum();
+    order_book_depth + amm_depth
+}
+
 /// Computes corridor metrics from transactions, calculating average and median settlement latency with optional liquidity depth.
 #[must_use]
 pub fn compute_corridor_metrics(
@@ -569,5 +625,78 @@ mod tests {
         let (retained, excluded) = filter_merged_accounts(&payments, &std::collections::HashSet::new());
         assert_eq!(excluded, 0);
         assert_eq!(retained.len(), 1);
+    }
+
+    // ── #2667: AMM pool depth combined with order book depth ───────────────
+
+    #[test]
+    fn test_compute_amm_pool_depth_zero_without_liquidity() {
+        let empty_pool = AmmPoolReserves {
+            reserve_a_usd: 0.0,
+            reserve_b_usd: 0.0,
+        };
+        assert_eq!(compute_amm_pool_depth(&empty_pool, 1.0), 0.0);
+    }
+
+    #[test]
+    fn test_compute_amm_pool_depth_scales_with_slippage_tolerance() {
+        let pool = AmmPoolReserves {
+            reserve_a_usd: 100_000.0,
+            reserve_b_usd: 100_000.0,
+        };
+
+        let tight = compute_amm_pool_depth(&pool, 0.1);
+        let loose = compute_amm_pool_depth(&pool, 2.0);
+
+        // A larger slippage tolerance means the trade can move the price
+        // further, so more of the pool's reserves are usable.
+        assert!(loose > tight);
+
+        // At 1% slippage: dx = 0.01 * 100_000 / 0.99 per side, summed over
+        // both sides.
+        let one_pct = compute_amm_pool_depth(&pool, 1.0);
+        let expected_side = 0.01 * 100_000.0 / 0.99;
+        assert!((one_pct - 2.0 * expected_side).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_combined_liquidity_depth_adds_amm_to_order_book() {
+        let order_book = OrderBookSnapshot {
+            bids: vec![OrderBookEntry {
+                price: 99.0,
+                amount_usd: 1_000.0,
+            }],
+            asks: vec![OrderBookEntry {
+                price: 101.0,
+                amount_usd: 1_000.0,
+            }],
+        };
+        let order_book_only = compute_combined_liquidity_depth(Some(&order_book), &[], 5.0);
+        assert!(order_book_only > 0.0);
+
+        let pool = AmmPoolReserves {
+            reserve_a_usd: 50_000.0,
+            reserve_b_usd: 50_000.0,
+        };
+        let combined = compute_combined_liquidity_depth(Some(&order_book), &[pool], 5.0);
+
+        // A pool with real depth must make the combined figure strictly
+        // larger than the order book alone — this is the scenario the issue
+        // asks to be tested ("Test where AMM provides depth").
+        assert!(combined > order_book_only);
+        assert!((combined - (order_book_only + compute_amm_pool_depth(&pool, 5.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_combined_liquidity_depth_amm_only() {
+        // No order book at all (e.g. an asset with no DEX offers) but a
+        // funded AMM pool should still produce a positive liquidity figure
+        // instead of silently reporting zero liquidity.
+        let pool = AmmPoolReserves {
+            reserve_a_usd: 20_000.0,
+            reserve_b_usd: 20_000.0,
+        };
+        let depth = compute_combined_liquidity_depth(None, &[pool], 1.0);
+        assert!(depth > 0.0);
     }
 }

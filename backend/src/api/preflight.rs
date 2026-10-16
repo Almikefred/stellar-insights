@@ -293,6 +293,51 @@ fn summarize(decision: PreflightDecision, checks: &[PreflightCheck]) -> String {
     }
 }
 
+/// Rank alternative corridors by success rate (primary) then estimated cost
+/// at the requested payment size (secondary), with corridor id as a final
+/// deterministic tie-break (#2668).
+///
+/// Alternatives were previously ordered by `health_score` alone, which
+/// blends success rate with a volume/sample-size term and has no cost
+/// dimension at all — two corridors with identical success rates but wildly
+/// different liquidity could rank in either order depending on unrelated
+/// traffic volume. "Cost" here is the price-impact share a payment of
+/// `amount_usd` would take out of a corridor's `liquidity_depth_usd` (now
+/// combining order book and AMM pool depth — see
+/// `compute_live_corridors`/#2667): a corridor with 10x the liquidity for
+/// the same success rate is objectively cheaper to route a given payment
+/// through. When no amount is given there's nothing to price, so corridors
+/// are compared on raw liquidity depth instead (deeper = lower baseline
+/// cost).
+#[must_use]
+pub fn rank_alternatives(
+    mut alternatives: Vec<CorridorResponse>,
+    amount_usd: Option<f64>,
+) -> Vec<CorridorResponse> {
+    alternatives.sort_by(|a, b| {
+        b.success_rate
+            .total_cmp(&a.success_rate)
+            .then_with(|| cost_score(a, amount_usd).total_cmp(&cost_score(b, amount_usd)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    alternatives
+}
+
+/// Lower is cheaper. The price-impact share of liquidity a payment of
+/// `amount_usd` would consume, or — with no amount to price — the inverse
+/// of liquidity depth so deeper corridors still sort ahead of shallower
+/// ones. A corridor with no observed liquidity is treated as the most
+/// expensive (not a division-by-zero panic, and not a false "free").
+fn cost_score(corridor: &CorridorResponse, amount_usd: Option<f64>) -> f64 {
+    let depth = corridor.liquidity_depth_usd;
+    match amount_usd {
+        Some(amount) if depth > 0.0 => amount / depth,
+        Some(_) => f64::INFINITY,
+        None if depth > 0.0 => 1.0 / depth,
+        None => f64::INFINITY,
+    }
+}
+
 /// Evaluate a request against a corridor table. Pure: the caller supplies the
 /// corridors and the timestamp.
 #[must_use]
@@ -313,7 +358,7 @@ pub fn evaluate(
         .filter(|c| corridor_matches(c, &source, &destination))
         .max_by(|a, b| a.health_score.total_cmp(&b.health_score));
 
-    let mut alternatives: Vec<CorridorResponse> = corridors
+    let alternatives: Vec<CorridorResponse> = corridors
         .iter()
         .filter(|c| {
             c.id.split_once("->")
@@ -323,11 +368,7 @@ pub fn evaluate(
         .filter(|c| chosen.is_none_or(|picked| c.health_score > picked.health_score))
         .cloned()
         .collect();
-    alternatives.sort_by(|a, b| {
-        b.health_score
-            .total_cmp(&a.health_score)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    let mut alternatives = rank_alternatives(alternatives, request.amount_usd);
     alternatives.truncate(MAX_ALTERNATIVES);
 
     let Some(corridor) = chosen else {
@@ -633,5 +674,83 @@ mod tests {
         assert!(validate(&bad_rate).is_err());
 
         assert!(validate(&request("USDC", "NGN", Some(10.0))).is_ok());
+    }
+
+    // ── #2668: alternatives ranked by success rate then cost ───────────────
+
+    #[test]
+    fn alternatives_rank_by_success_rate_first() {
+        // B has a lower success rate than A, so A must rank first even
+        // though B has far deeper liquidity (cheaper) — success rate is the
+        // primary key, not a tie-break.
+        let table = vec![
+            corridor("USDC:GA->NGN:GB", 50.0, 500_000.0, 400, 10.0), // chosen: low health, not filtered out of alternatives
+            corridor("XLM:native->NGN:GB", 99.0, 10_000.0, 400, 50.0), // A: higher success rate, thin liquidity
+            corridor("EURC:GD->NGN:GB", 90.0, 1_000_000.0, 400, 50.0), // B: lower success rate, deep liquidity
+        ];
+        let result = evaluate(&table, &request("USDC", "NGN", Some(50_000.0)), now());
+
+        let ids: Vec<&str> = result.alternatives.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["XLM:native->NGN:GB", "EURC:GD->NGN:GB"]);
+    }
+
+    #[test]
+    fn alternatives_break_ties_on_cost_when_success_rate_matches() {
+        // Equal success rate: the corridor with deeper liquidity (lower
+        // price-impact cost for this payment) must rank first.
+        let table = vec![
+            corridor("USDC:GA->NGN:GB", 50.0, 500_000.0, 400, 10.0), // chosen
+            corridor("XLM:native->NGN:GB", 97.0, 50_000.0, 400, 50.0), // thinner liquidity
+            corridor("EURC:GD->NGN:GB", 97.0, 500_000.0, 400, 50.0), // deeper liquidity, same success rate
+        ];
+        let result = evaluate(&table, &request("USDC", "NGN", Some(50_000.0)), now());
+
+        let ids: Vec<&str> = result.alternatives.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["EURC:GD->NGN:GB", "XLM:native->NGN:GB"]);
+    }
+
+    #[test]
+    fn alternatives_without_an_amount_rank_by_liquidity_depth() {
+        let table = vec![
+            corridor("USDC:GA->NGN:GB", 50.0, 100.0, 10, 10.0), // chosen
+            corridor("XLM:native->NGN:GB", 90.0, 1_000.0, 10, 50.0), // shallower
+            corridor("EURC:GD->NGN:GB", 90.0, 10_000.0, 10, 50.0), // deeper
+        ];
+        let result = evaluate(&table, &request("USDC", "NGN", None), now());
+
+        let ids: Vec<&str> = result.alternatives.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["EURC:GD->NGN:GB", "XLM:native->NGN:GB"]);
+    }
+
+    #[test]
+    fn alternatives_ranking_is_deterministic_on_a_full_tie() {
+        let table = vec![
+            corridor("AAA:GA->NGN:GB", 50.0, 100.0, 10, 10.0), // chosen
+            corridor("ZZZ:GB->NGN:GB", 90.0, 100.0, 10, 50.0),
+            corridor("BBB:GC->NGN:GB", 90.0, 100.0, 10, 50.0),
+        ];
+        let result = evaluate(&table, &request("AAA", "NGN", None), now());
+
+        let ids: Vec<&str> = result.alternatives.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["BBB:GC->NGN:GB", "ZZZ:GB->NGN:GB"]);
+    }
+
+    #[test]
+    fn rank_alternatives_is_a_pure_deterministic_sort() {
+        let alts = vec![
+            corridor("A->X", 90.0, 1_000.0, 10, 0.0),
+            corridor("B->X", 95.0, 1_000.0, 10, 0.0),
+            corridor("C->X", 95.0, 2_000.0, 10, 0.0),
+        ];
+        let ranked = rank_alternatives(alts.clone(), Some(100.0));
+        let ids: Vec<&str> = ranked.iter().map(|c| c.id.as_str()).collect();
+        // 95% success rate corridors (B, C) rank above the 90% one (A); of
+        // the two, C's deeper liquidity makes it cheaper than B.
+        assert_eq!(ids, vec!["C->X", "B->X", "A->X"]);
+
+        // Same input, run again: identical output.
+        let ranked_again = rank_alternatives(alts, Some(100.0));
+        let ids_again: Vec<&str> = ranked_again.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ids_again);
     }
 }

@@ -260,6 +260,13 @@ pub fn routes(
         pool.clone(),
         Arc::clone(&rpc_client),
     ));
+    // #2666 — nothing previously called `sync_assets`/`take_snapshots`, so
+    // the trustline endpoints below always queried empty tables. Keep them
+    // fresh: re-sync from Horizon hourly, roll a snapshot for the growth
+    // chart once a day. `routes()` runs once at startup, so this spawns
+    // exactly one background loop per process.
+    let _trustline_sync_handle = trustline_analyzer.spawn(3_600, 86_400);
+
     // Quests/achievements (gamification) — feature-gated, off by default
     // (see issue #2659); falls back to an empty router so the `.merge()`
     // below doesn't need its own cfg.
