@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import { z } from 'zod';
 import { apiClient } from './api';
 import { useAuthStore } from '@store/authStore';
+import { logger } from '@utils/logger';
 
 // In-memory cache for the registered push token
 let activeDeviceToken: string | null = null;
@@ -41,8 +42,9 @@ type ValidatedPayload = z.infer<typeof NotificationPayloadSchema>;
 function parsePayload(remoteMessage: RemoteMessage): ValidatedPayload | null {
   const result = NotificationPayloadSchema.safeParse(remoteMessage);
   if (!result.success) {
-    console.warn(
-      '[Notifications] Dropping malformed payload:',
+    logger.warn(
+      '[Notifications]',
+      'Dropping malformed payload:',
       result.error.flatten(),
     );
     return null;
@@ -63,7 +65,7 @@ export async function registerDeviceTokenWithBackend(
     const messagingInstance = getMessaging();
     const resolvedToken = token || (await getToken(messagingInstance));
     if (!resolvedToken || resolvedToken.trim() === '') {
-      console.warn('[Notifications] No device token available to register');
+      logger.warn('[Notifications]', 'No device token available to register');
       return false;
     }
 
@@ -71,8 +73,9 @@ export async function registerDeviceTokenWithBackend(
 
     const userAccount = account || useAuthStore.getState().user?.publicKey;
     if (!userAccount) {
-      console.log(
-        '[Notifications] User not authenticated; token cached locally for post-login registration',
+      logger.info(
+        '[Notifications]',
+        'User not authenticated; token cached locally for post-login registration',
       );
       return false;
     }
@@ -84,10 +87,10 @@ export async function registerDeviceTokenWithBackend(
       device_label: Platform.OS === 'ios' ? 'iOS' : 'Android',
     });
 
-    console.log('[Notifications] Device token registered with backend successfully');
+    logger.info('[Notifications]', 'Device token registered with backend successfully');
     return true;
   } catch (error) {
-    console.warn('[Notifications] Failed to register device token with backend:', error);
+    logger.warn('[Notifications]', 'Failed to register device token with backend:', error);
     return false;
   }
 }
@@ -109,10 +112,10 @@ export async function deregisterDeviceTokenFromBackend(
     );
 
     activeDeviceToken = null;
-    console.log('[Notifications] Device token deregistered from backend');
+    logger.info('[Notifications]', 'Device token deregistered from backend');
     return true;
   } catch (error) {
-    console.warn('[Notifications] Failed to deregister device token from backend:', error);
+    logger.warn('[Notifications]', 'Failed to deregister device token from backend:', error);
     return false;
   }
 }
@@ -129,18 +132,18 @@ export async function setupNotifications(): Promise<void> {
     authStatus === AuthorizationStatus.PROVISIONAL;
 
   if (!enabled) {
-    console.log('[Notifications] Permission denied');
+    logger.info('[Notifications]', 'Permission denied — push notifications will not be shown.');
     return;
   }
 
   // Obtain device token and register with backend
   const token = await getToken(messagingInstance);
-  console.log('[Notifications] FCM token obtained');
+  logger.info('[Notifications]', 'FCM token obtained');
   await registerDeviceTokenWithBackend(token);
 
   // Listen for token refreshes and re-register
   onTokenRefresh(messagingInstance, async newToken => {
-    console.log('[Notifications] FCM token refreshed');
+    logger.info('[Notifications]', 'FCM token refreshed');
     await registerDeviceTokenWithBackend(newToken);
   });
 
