@@ -70,6 +70,17 @@ Both are configured via environment variables:
 Reminders are delivered through the same notification channel used for other
 account events (email when configured, otherwise the account's webhook).
 
+## Wallet sign-in (SEP-10)
+
+The dashboard signs wallets in with [SEP-10](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md).
+The **home domain is server-authoritative**: the frontend fetches it from the
+backend config endpoint (`GET /api/v1/auth/config`) and passes it to the SEP-10
+challenge request. The client no longer derives the home domain from
+`window.location.hostname`, so sign-in works on preview deployments and
+localhost, and a client cannot pick the domain that is validated. The backend
+ignores any client-supplied home domain and always uses its configured value
+(`SEP10_HOME_DOMAIN`).
+
 ## Database
 
 **SQLite only.** This is a compile-time property, not a configuration one:
