@@ -127,6 +127,26 @@ through the TypeScript and Python SDKs, as an MCP server you can host
 (`sdk/mcp-server`), and as a Claude plugin (`plugins/payraider`). See
 [docs/PLUGIN.md](docs/PLUGIN.md).
 
+### Source amount or destination amount
+
+The check accepts either the amount you send or the amount the recipient must
+receive:
+
+- `amount_usd` — the source amount you intend to send. The liquidity check
+  runs against this amount.
+- `destination_amount` — the amount the recipient must receive. The source
+  amount is derived from it via the strict-receive path, and the liquidity
+  check runs against that converted source amount.
+
+Send exactly one of the two. Supplying both, or neither, is rejected at the
+boundary with the standard error response.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/preflight \
+  -H 'content-type: application/json' \
+  -d '{"source_asset":"USDC","destination_asset":"NGN","destination_amount":2500}'
+```
+
 ### Corridors are keyed by asset code **and** issuer
 
 A corridor is identified by the full asset, not just its code. `USDC` issued
@@ -174,39 +194,6 @@ See [`contracts/archive/README.md`](contracts/archive/README.md).
 Who may anchor snapshots, and how to rotate those keys, is documented in
 [`contracts/payraider/README.md`](contracts/payraider/README.md).
 
-## 🧪 Local safety checks (already built)
+## 🧪 Local safety chec
 
-- `scripts/check_folder_size.sh` (fails if any folder >200MB)
-- [`.github/workflows/enforce-folder-size.yml`](.github/workflows/enforce-folder-size.yml)
-
-## 📁 Structure
-
-| Path | Contents |
-|---|---|
-| `backend/` | Rust analytics engine — REST, GraphQL and WebSocket API |
-| `frontend/` | Next.js dashboard |
-| `mobile/` | React Native (Expo) app — [current status](mobile/README.md#current-status) |
-| `contracts/` | Soroban contracts (Rust, `no_std`) |
-| `sdk/` | TypeScript and Python API clients |
-| `docs/` | Project documentation |
-| `scripts/` | Build, deploy and maintenance scripts |
-| `tests/` | Cross-cutting / end-to-end tests |
-| `k8s/`, `terraform/` | Deployment manifests and infrastructure as code — **`terraform/` is not used by the actual deployment** (Render Blueprint + SQLite, see `docs/DEPLOY.md`); kept as a reference, see issue #2650 |
-| `elk/`, `monitoring/` | Logging and observability stack configs — **`elk/` is not used by the actual deployment**; kept as a reference, see issue #2650 |
-
-## 📌 Notes
-
-- History has been cleaned to reduce clone size.
-- Use `git lfs` for large binaries.
-- For full operational details, see `docs/` and module READMEs.
-
-## SDK status
-
-`sdk/` ships four packages: `typescript`, `python
-
-/* … truncated 1302 chars — edit only what you need near the top … */
-
-## Handsoff notes
-
-<!-- handsoff-issue-2608 -->
-- #2608: Data retention and downsampling for raw payment observations
+/* … truncated 1456 chars — edit only what you need near the top … */
