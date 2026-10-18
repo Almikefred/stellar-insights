@@ -155,6 +155,17 @@ Building a React app? See
 [`@payraider/react`](../react) for hooks and pre-built components on
 top of this SDK.
 
+## Development
+
+```bash
+npm ci
+npm test                  # unit tests, including the shared conformance cases
+npm test -- conformance   # only the cases in ../conformance
+```
+
+The conformance cases are recorded HTTP exchanges both SDKs must handle the
+same way; see [`../conformance`](../conformance/README.md).
+
 ## License
 
 MIT

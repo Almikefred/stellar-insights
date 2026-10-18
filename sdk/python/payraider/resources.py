@@ -123,6 +123,17 @@ class PreflightResource:
         )
         return PreflightResponse.model_validate(raw)
 
+    async def check_batch(self, items: List[Dict[str, Any]]) -> PreflightBatchResponse:
+        """Check up to 100 payments in one request.
+
+        Each item takes the same keys as :meth:`check` (``source_asset``,
+        ``destination_asset``, optional ``amount_usd`` and
+        ``min_success_rate``). An invalid item comes back with an ``error``
+        instead of failing the batch.
+        """
+        cleaned = [{key: value for key, value in item.items() if value is not None} for item in items]
+        return await self._http.request("POST", "/api/v1/preflight/batch", json={"items": cleaned})
+
     async def is_safe_to_pay(
         self,
         source_asset: str,

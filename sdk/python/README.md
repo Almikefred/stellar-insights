@@ -119,6 +119,21 @@ client = PayRaider(
 )
 ```
 
+To check a payout batch, send up to 100 payments in one call. An invalid
+payment comes back with an `error` instead of failing the rest:
+
+```python
+batch = await client.preflight.check_batch([
+    {"source_asset": "USDC", "destination_asset": "NGN", "amount_usd": 2500},
+    {"source_asset": "USDC", "destination_asset": "KES", "amount_usd": 900},
+])
+for item in batch["results"]:
+    if item["error"]:
+        print(item["index"], item["error"]["code"])
+    elif item["result"]["decision"] != "proceed":
+        print(item["index"], item["result"]["summary"])
+```
+
 ## Resources
 
 `anchors`, `corridors`, `prices`, `cost_calculator`, `preflight`, `alerts`, `webhooks`,
@@ -134,3 +149,6 @@ pytest                        # unit tests
 pytest -m testnet             # integration tests against a real backend (needs credentials)
 mypy                          # strict type check (config in pyproject.toml)
 ```
+
+The conformance cases are recorded HTTP exchanges both SDKs must handle the
+same way; see [`../conformance`](../conformance/README.md).
