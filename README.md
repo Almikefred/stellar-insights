@@ -127,6 +127,25 @@ through the TypeScript and Python SDKs, as an MCP server you can host
 (`sdk/mcp-server`), and as a Claude plugin (`plugins/payraider`). See
 [docs/PLUGIN.md](docs/PLUGIN.md).
 
+### Corridors are keyed by asset code **and** issuer
+
+A corridor is identified by the full asset, not just its code. `USDC` issued
+by Circle and `USDC` issued by another anchor are **different corridors** with
+different liquidity and risk, so they are tracked and evaluated separately.
+
+Pass the issuer with `CODE:ISSUER` to pin a specific asset:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/preflight \
+  -H 'content-type: application/json' \
+  -d '{"source_asset":"USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN","destination_asset":"NGN","amount_usd":2500}'
+```
+
+A bare `CODE` (e.g. `USDC`) is still accepted and resolves to the corridor for
+that code; when several issuers exist for the same code, use `CODE:ISSUER` to
+select the one you mean. Malformed asset strings are rejected at the boundary
+with the standard error response.
+
 ## Database
 
 **SQLite only.** This is a compile-time property, not a configuration one:
@@ -180,27 +199,6 @@ See [`contracts/archive/README.md`](contracts/archive/README.md).
 
 ## SDK status
 
-`sdk/` ships four packages: `typescript`, `python`, `react`, and `mcp-server`.
-**Neither the mobile app nor the web frontend currently consumes any of them.**
-The mobile app makes API calls via its own internal `axios`-based `apiClient`
-(`mobile/src/services/api.ts`); the frontend has its own `src/lib/api-client.ts`.
-The TypeScript SDK is published publicly (`"publishConfig": {"access": "public"}`)
-but its correctness against the real backend API is therefore untested by any
-internal usage.
+`sdk/` ships four packages: `typescript`, `python
 
-Known gaps:
-- **`@payraider/sdk` (typescript):** public, but not imported by mobile or frontend.
-- **`@payraider/react`:** wraps the TypeScript SDK, also not consumed internally.
-- **`@payraider/mcp-server`:** a separate product surface (AI-agent tooling);
-  candidate for extraction into its own repository. See
-  [`sdk/mcp-server/README.md`](sdk/mcp-server/README.md).
-
-The storage library situation in mobile is intentionally kept simple:
-`react-native-mmkv` (encrypted, MMKV-based) for general key-value storage,
-`react-native-keychain` for the MMKV encryption key and auth tokens,
-and `react-native-biometrics` for biometric prompts. All three are actively used.
-
-## Handsoff notes
-
-<!-- handsoff-issue-2354 -->
-- #2354: 🟡 MEDIUM: Health Check Too Simple
+/* … truncated 1302 chars — edit only what you need near the top … */
