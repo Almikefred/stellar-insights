@@ -180,28 +180,6 @@ Pass the issuer with `CODE:ISSUER` to pin a specific asset:
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/preflight \
   -H 'content-type: application/json' \
-  -d '{"source_asset":"USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN","destination_asset":"NGN","amount_usd":2500}'
-```
+  -d '{"source_asset":"USD
 
-A bare `CODE` (e.g. `USDC`) is still accepted and resolves to the corridor for
-that code; when several issuers exist for the same code, use `CODE:ISSUER` to
-select the one you mean. Malformed asset strings are rejected at the boundary
-with the standard error response.
-
-## Database
-
-**SQLite only.** This is a compile-time property, not a configuration one:
-`sqlx` is built with only the `sqlite` feature, `backend/src/database.rs` uses
-`SqlitePool`/`SqliteConnectOptions` directly, and every migration is written in
-SQLite-flavoured SQL.
-
-Setting a `postgresql://` `DATABASE_URL` does **not** switch databases — it
-fails to parse as `SqliteConnectOptions` and the backend refuses to start.
-Adding Postgres support is a code change. Whether to make it is being tracked
-in issue #1876.
-
-## Deployed contracts
-
-The backend 
-
-/* … truncated 819 chars — edit only what you need near the top … */
+/* … truncated 1003 chars — edit only what you need near the top … */
